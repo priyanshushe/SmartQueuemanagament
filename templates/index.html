@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Smart Queue</title>
+<link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+<link href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" rel="stylesheet">
+
+<style>
+/* General body */
+body {
+    font-family: 'Poppins', sans-serif;
+    margin: 0;
+    height: 100vh;
+    overflow: hidden;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: url("{{ url_for('static', filename='background.jpg') }}") no-repeat center center/cover;
+}
+
+/* Animated canvas */
+#animation-canvas {
+    position: fixed;
+    top:0;
+    left:0;
+    width:100%;
+    height:100%;
+    z-index:0;
+}
+
+/* Center container */
+.container-glass {
+    position: relative;
+    z-index:2;
+    background: rgba(255,255,255,0.1);
+    backdrop-filter: blur(10px);
+    border-radius:25px;
+    padding:40px;
+    width: 90%;
+    max-width: 700px;
+    text-align:center;
+    color: #fff;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+}
+
+/* Header */
+h1 { font-size:2.5rem; margin-bottom:0.2rem; }
+p.subtitle { font-size:1.2rem; margin-bottom:2rem; }
+
+/* Boxes */
+.box-container {
+    position: relative;
+    height: 400px;
+    width: 100%;
+}
+.box {
+    position:absolute;
+    width: 320px;
+    background: rgba(255,255,255,0.15);
+    backdrop-filter: blur(5px);
+    padding: 25px;
+    border-radius: 20px;
+    box-shadow:0 4px 20px rgba(0,0,0,0.3);
+    opacity:0;
+    transform: scale(0.9);
+    left:50%;
+    top:50%;
+    transform: translate(-50%, -50%) scale(0.9);
+    transition: all 0.5s ease;
+}
+.box.active {
+    opacity:1;
+    transform: translate(-50%, -50%) scale(1);
+    z-index:10;
+}
+.box h4 { margin-bottom:15px; }
+.box input { width: 100%; padding:0.6rem; margin:0.5rem 0; border-radius:10px; border:none; }
+.box button { width:100%; padding:0.7rem; border-radius:12px; border:none; cursor:pointer; font-weight:600; }
+
+/* Buttons color */
+.btn-primary { background:#004aad; color:#fff; }
+.btn-primary:hover { background:#00337f; }
+.btn-success { background:#28a745; color:#fff; }
+.btn-success:hover { background:#1e7e34; }
+.btn-info { background:#17a2b8; color:#fff; }
+.btn-info:hover { background:#117a8b; }
+
+/* Toggle buttons */
+.toggle-buttons { margin-top:25px; display:flex; justify-content:center; }
+.toggle-buttons button {
+    margin: 0 8px;
+    border:none;
+    padding:0.5rem 1rem;
+    border-radius:12px;
+    cursor:pointer;
+    background: rgba(255,255,255,0.2);
+    color:#fff;
+    transition:0.3s;
+}
+.toggle-buttons button:hover { background: rgba(255,255,255,0.4); }
+
+/* Token countdown */
+#status-countdown { font-weight:bold; margin-top:10px; font-size:1.1rem; }
+
+.alert { margin-top:10px; color:#ff4d4d; font-weight:600; }
+</style>
+</head>
+<body>
+
+<canvas id="animation-canvas"></canvas>
+
+<div class="container-glass">
+<h1>Smart Queue</h1>
+<p class="subtitle">Save time, Skip the line</p>
+
+<div class="box-container">
+    <!-- User -->
+    <div class="box active" id="user-box">
+        <h4>User Registration</h4>
+        <form action="/user" method="POST">
+            <input type="text" name="name" placeholder="Full Name" required>
+            <input type="text" name="phone" placeholder="Phone Number" required>
+            <input type="text" name="address" placeholder="Address" required>
+            <input type="hidden" name="date" value="{{ today }}">
+            <button type="submit" class="btn btn-primary mt-2">Submit</button>
+        </form>
+    </div>
+
+    <!-- Staff -->
+    <div class="box" id="staff-box">
+        <h4>Staff Login</h4>
+        <form action="/staff_login" method="POST">
+            <input type="text" name="username" placeholder="Username" required>
+            <input type="password" name="password" placeholder="Password" required>
+            <button type="submit" class="btn btn-success mt-2">Login</button>
+        </form>
+        {% if login_error %}
+        <div class="alert">Invalid username or password!</div>
+        {% endif %}
+    </div>
+
+    <!-- Token Status -->
+    <div class="box" id="status-box">
+        <h4>Token Status</h4>
+        <input type="number" id="status-token-number" placeholder="Enter Token Number">
+        <button class="btn btn-info mt-2" id="check-status">Check Status</button>
+        <div id="status-result"></div>
+    </div>
+</div>
+
+<div class="toggle-buttons">
+    <button onclick="showBox('user-box')">User</button>
+    <button onclick="showBox('staff-box')">Staff</button>
+    <button onclick="showBox('status-box')">Token Status</button>
+</div>
+</div>
+
+<script>
+// Center box transition
+function showBox(boxId){
+    document.querySelectorAll('.box').forEach(b => b.classList.remove('active','animate__fadeIn','animate__animated'));
+    let el = document.getElementById(boxId);
+    el.classList.add('active','animate__animated','animate__fadeIn');
+}
+
+// Token status
+let countdownInterval;
+document.getElementById('check-status').addEventListener('click', ()=>{
+    clearInterval(countdownInterval);
+    let tokenNumber = document.getElementById('status-token-number').value;
+    if(!tokenNumber) return alert("Enter token number");
+
+    fetch(`/api/token_status/${tokenNumber}`)
+    .then(res=>res.json())
+    .then(data=>{
+        let resultDiv = document.getElementById('status-result');
+        if(data.error){
+            resultDiv.innerHTML = `<p class="alert">${data.error}</p>`;
+            return;
+        }
+        resultDiv.innerHTML = `
+            <p>Token Number: <strong>${data.token_number}</strong></p>
+            <p>Status: <strong>${data.status}</strong></p>
+            <p id="status-countdown"></p>
+        `;
+        let countdownEl = document.getElementById('status-countdown');
+        if(data.status.toLowerCase() === 'done'){ countdownEl.innerText="✅ Completed"; return; }
+        if(data.status.toLowerCase() === 'cancelled'){ countdownEl.innerText="❌ Cancelled"; return; }
+
+        let endTime = new Date(data.end_datetime);
+        countdownInterval = setInterval(()=>{
+            let now = new Date();
+            let diff = Math.floor((endTime-now)/1000);
+            if(diff<=0){
+                countdownEl.innerText="⏰ It's your turn! Please wait for staff.";
+                clearInterval(countdownInterval);
+            } else {
+                countdownEl.innerText = `Countdown: ${Math.floor(diff/60)} min ${diff%60} sec`;
+            }
+        },1000);
+    }).catch(err=>{
+        document.getElementById('status-result').innerHTML = `<p class="alert">Cannot connect to server</p>`;
+    });
+});
+
+// Background animation - balls + lines
+const canvas = document.getElementById('animation-canvas');
+const ctx = canvas.getContext('2d');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+
+let particles = [];
+const particleCount = 50;
+
+class Particle{
+    constructor(){
+        this.x = Math.random()*canvas.width;
+        this.y = Math.random()*canvas.height;
+        this.radius = Math.random()*4+1;
+        this.dx = (Math.random()-0.5)*1.5;
+        this.dy = (Math.random()-0.5)*1.5;
+    }
+    draw(){
+        ctx.beginPath();
+        ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);
+        ctx.fillStyle = "rgba(255,255,255,0.3)";
+        ctx.fill();
+    }
+    update(){
+        if(this.x<0 || this.x>canvas.width) this.dx*=-1;
+        if(this.y<0 || this.y>canvas.height) this.dy*=-1;
+        this.x += this.dx;
+        this.y += this.dy;
+        this.draw();
+    }
+}
+
+for(let i=0;i<particleCount;i++) particles.push(new Particle());
+
+function animate(){
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    // Draw lines
+    for(let i=0;i<particleCount;i++){
+        particles[i].update();
+        for(let j=i+1;j<particleCount;j++){
+            let dx = particles[i].x - particles[j].x;
+            let dy = particles[i].y - particles[j].y;
+            let dist = Math.sqrt(dx*dx + dy*dy);
+            if(dist<100){
+                ctx.beginPath();
+                ctx.moveTo(particles[i].x,particles[i].y);
+                ctx.lineTo(particles[j].x,particles[j].y);
+                ctx.strokeStyle = "rgba(255,255,255,0.1)";
+                ctx.stroke();
+            }
+        }
+    }
+    requestAnimationFrame(animate);
+}
+animate();
+
+// Resize
+window.addEventListener('resize',()=>{
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+});
+</script>
+</body>
+</html>
