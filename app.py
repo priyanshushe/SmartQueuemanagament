@@ -84,11 +84,11 @@ def staff_logout():
 def user_submit():
     name = request.form.get('name')
     phone = request.form.get('phone')
-    address = request.form.get('address')
+    issue = request.form.get('issue')
     date_str = request.form.get('date')          # YYYY-MM-DD
     time_str = request.form.get('time_slot')     # HH:MM
 
-    if not (name and phone and address and date_str and time_str):
+    if not (name and phone and issue and date_str and time_str):
         return "All fields required!", 400
 
     # 🚫 1. Block booking if phone already has an active token (any date)
@@ -145,7 +145,7 @@ def user_submit():
         "token_number": token_number,
         "name": name,
         "phone": phone,
-        "address": address,
+        "issue": issue,
         "date": date_str,
         "slot_time": time_str,
         "start_time": slot_start_dt.strftime("%H:%M"),
