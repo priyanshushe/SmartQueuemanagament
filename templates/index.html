@@ -80,8 +80,21 @@ p.subtitle { font-size:1.2rem; margin-bottom:2rem; }
     z-index:10;
 }
 .box h4 { margin-bottom:15px; }
-.box input { width: 100%; padding:0.6rem; margin:0.5rem 0; border-radius:10px; border:none; }
-.box button { width:100%; padding:0.7rem; border-radius:12px; border:none; cursor:pointer; font-weight:600; }
+.box input {
+    width: 100%;
+    padding:0.6rem;
+    margin:0.5rem 0;
+    border-radius:10px;
+    border:none;
+}
+.box button {
+    width:100%;
+    padding:0.7rem;
+    border-radius:12px;
+    border:none;
+    cursor:pointer;
+    font-weight:600;
+}
 
 /* Buttons color */
 .btn-primary { background:#004aad; color:#fff; }
@@ -127,8 +140,14 @@ p.subtitle { font-size:1.2rem; margin-bottom:2rem; }
             <input type="text" name="name" placeholder="Full Name" required>
             <input type="text" name="phone" placeholder="Phone Number" required>
             <input type="text" name="address" placeholder="Address" required>
-            <input type="hidden" name="date" value="{{ today }}">
-            <button type="submit" class="btn btn-primary mt-2">Submit</button>
+
+            <label class="mt-2" style="font-size:0.9rem;display:block;text-align:left;">Select Date</label>
+            <input type="date" name="date" value="{{ today }}" min="{{ today }}" required>
+
+            <label class="mt-2" style="font-size:0.9rem;display:block;text-align:left;">Select Time Slot</label>
+            <input type="time" name="time_slot" step="900" required>
+
+            <button type="submit" class="btn btn-primary mt-3">Submit</button>
         </form>
     </div>
 
@@ -192,16 +211,17 @@ document.getElementById('check-status').addEventListener('click', ()=>{
         let countdownEl = document.getElementById('status-countdown');
         if(data.status.toLowerCase() === 'done'){ countdownEl.innerText="✅ Completed"; return; }
         if(data.status.toLowerCase() === 'cancelled'){ countdownEl.innerText="❌ Cancelled"; return; }
+        if(data.status.toLowerCase() === 'expired'){ countdownEl.innerText="⏱️ Token expired (15 minutes over)."; return; }
 
-        let endTime = new Date(data.end_datetime);
+        let endTime = new Date(data.end_datetime); // booking start time
         countdownInterval = setInterval(()=>{
             let now = new Date();
             let diff = Math.floor((endTime-now)/1000);
             if(diff<=0){
-                countdownEl.innerText="⏰ It's your turn! Please wait for staff.";
+                countdownEl.innerText="⏰ Slot time reached. Please wait for staff.";
                 clearInterval(countdownInterval);
             } else {
-                countdownEl.innerText = `Countdown: ${Math.floor(diff/60)} min ${diff%60} sec`;
+                countdownEl.innerText = `Starts in: ${Math.floor(diff/60)} min ${diff%60} sec`;
             }
         },1000);
     }).catch(err=>{

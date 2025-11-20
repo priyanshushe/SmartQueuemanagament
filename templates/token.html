@@ -63,11 +63,23 @@ body {
     to { opacity: 1; transform: translateY(0); }
 }
 
+h3 { margin-bottom: 10px; }
+p { margin: 4px 0; }
+
 #countdown {
-    font-size: 1.5rem;
-    color: #004aad;
+    font-size: 1.3rem;
+    color: #ffd54f;
     font-weight: bold;
-    margin-top: 20px;
+    margin-top: 18px;
+}
+
+.info-text {
+    margin-top: 10px;
+    font-size: 0.95rem;
+}
+
+.back-btn {
+    margin-top: 18px;
 }
 </style>
 </head>
@@ -75,35 +87,55 @@ body {
 
 <div class="bg-animation">
     {% for i in range(25) %}
-    <div class="dot" style="left:{{ (loop.index * 4) % 100 }}%; animation-delay: {{ loop.index * 0.5 }}s;"></div>
+    <div class="dot" data-i="{{ i }}"></div>
     {% endfor %}
 </div>
 
 <div class="content-box">
-<h3>Your Token: {{ token }}</h3>
-<p>Date: {{ date }}</p>
-<p>Booking Time: {{ time }}</p>
-<p id="countdown">Calculating...</p>
+    <h3>Your Token: {{ token }}</h3>
+    <p>Date: <strong>{{ date }}</strong></p>
+    <p>Time Slot: <strong>{{ booking_time }}</strong></p>
+    <p>Valid From: <strong>{{ start_time }}</strong> to <strong>{{ end_time }}</strong> (15 minutes)</p>
+
+    <p id="countdown">Calculating...</p>
+    <p class="info-text">
+        Please arrive during your time slot. If you do not report within 15 minutes of the start time,
+        your token will expire.
+    </p>
+
+    <a href="{{ url_for('home') }}" class="btn btn-primary back-btn">Back to Home</a>
 </div>
 
 <script>
-let [h,m,s] = "{{ end_time }}".split(":");
-let endTime = new Date();
-endTime.setHours(h,m,s,0);
+// Position dots using JS (keeps VS Code happy)
+document.querySelectorAll('.dot').forEach((dot, index) => {
+    dot.style.left = ((index * 4) % 100) + '%';
+    dot.style.animationDelay = (index * 0.5) + 's';
+});
 
-function updateCountdown(){
-    let now = new Date();
-    let diff = Math.floor((endTime-now)/1000);
-    if(diff<0) diff=0;
-    let min=Math.floor(diff/60);
-    let sec=diff%60;
-    document.getElementById('countdown').innerText=min+" min "+sec+" sec";
-    if(diff<=0){
-        document.getElementById('countdown').innerText="⏰ It's your turn! Please wait for staff.";
+// Countdown to slot START time using full date + time
+const startDateTimeStr = "{{ date }}T{{ start_time }}";   // e.g. 2025-11-20T10:30
+let startTime = new Date(startDateTimeStr);
+
+function updateCountdown() {
+    const now = new Date();
+    let diff = Math.floor((startTime - now) / 1000); // seconds
+
+    const countdownEl = document.getElementById('countdown');
+
+    if (diff <= 0) {
+        // Slot time reached
+        countdownEl.innerText = "⏰ It's your turn! Please report to the counter. Valid until {{ end_time }}.";
         clearInterval(timer);
+        return;
     }
+
+    const min = Math.floor(diff / 60);
+    const sec = diff % 60;
+    countdownEl.innerText = "Starts in: " + min + " min " + sec + " sec";
 }
-let timer=setInterval(updateCountdown,1000);
+
+let timer = setInterval(updateCountdown, 1000);
 updateCountdown();
 </script>
 

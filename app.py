@@ -18,11 +18,13 @@ login_manager = LoginManager()
 login_manager.login_view = "home"
 login_manager.init_app(app)
 
+
 # --- Staff User Class ---
 class Staff(UserMixin):
     def __init__(self, id_, username):
         self.id = id_      # must be string
         self.username = username
+
 
 @login_manager.user_loader
 def load_user(user_id):
@@ -31,6 +33,20 @@ def load_user(user_id):
         return Staff(str(staff["_id"]), staff["username"])
     return None
 
+
+# --------- Helper: auto-expire old tokens ---------
+def expire_old_tokens():
+    """Set status='Expired' for tokens whose 15-minute slot is over."""
+    now = datetime.now()
+    tokens_collection.update_many(
+        {
+            "status": "Active",
+            "expiry_datetime": {"$lt": now}
+        },
+        {"$set": {"status": "Expired"}}
+    )
+
+
 # --- Home Page ---
 @app.route('/')
 def home():
@@ -38,18 +54,22 @@ def home():
     login_error = request.args.get('login_error')
     return render_template('index.html', today=today, login_error=login_error)
 
+
 # --- Staff Login ---
 @app.route('/staff_login', methods=['POST'])
 def staff_login():
     username = request.form.get("username")
     password = request.form.get("password")
+
     staff = staff_collection.find_one({"username": username})
-    if staff and staff["password"] == password:  # plain text check
+    # NOTE: plain-text password check (same as your original)
+    if staff and staff["password"] == password:
         user_obj = Staff(str(staff["_id"]), staff["username"])
         login_user(user_obj)
         return redirect(url_for("staff_dashboard"))
     else:
         return redirect(url_for("home") + "?login_error=1")
+
 
 # --- Staff Logout ---
 @app.route('/staff_logout')
@@ -58,34 +78,50 @@ def staff_logout():
     logout_user()
     return redirect(url_for("home"))
 
-# --- User Submit ---
+
+# --- User Submit (booking with date + time slot) ---
 @app.route('/user', methods=['POST'])
 def user_submit():
     name = request.form.get('name')
     phone = request.form.get('phone')
     address = request.form.get('address')
-    date_str = request.form.get('date')
+    date_str = request.form.get('date')          # YYYY-MM-DD from <input type="date">
+    time_str = request.form.get('time_slot')     # HH:MM from <input type="time">
 
-    if not (name and phone and address and date_str):
+    if not (name and phone and address and date_str and time_str):
         return "All fields required!", 400
 
-    service_duration = timedelta(minutes=5)
+    # Combine date + time into one datetime (start of the slot)
+    try:
+        slot_start_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return "Invalid date or time format", 400
+
     now = datetime.now()
 
-    # Get last token for today
+    # Do not allow booking in the past
+    if slot_start_dt < now:
+        return "You cannot book a past time slot.", 400
+
+    # Each token is valid for 15 minutes from slot_start_dt
+    token_life = timedelta(minutes=15)
+    slot_end_dt = slot_start_dt + token_life
+
+    # Prevent double booking of the exact same date + time slot (only one active token per slot)
+    existing = tokens_collection.find_one({
+        "date": date_str,
+        "slot_time": time_str,
+        "status": {"$in": ["Active"]}
+    })
+    if existing:
+        return "This time slot is already booked. Please choose another.", 400
+
+    # Generate token number for that date
     last_token = tokens_collection.find_one(
         {"date": date_str},
         sort=[("token_number", -1)]
     )
     token_number = 1 if not last_token else last_token["token_number"] + 1
-
-    if last_token and "end_time" in last_token:
-        last_end_time = datetime.strptime(f"{date_str} {last_token['end_time']}", "%Y-%m-%d %H:%M:%S")
-        start_time = max(now, last_end_time)
-    else:
-        start_time = now
-
-    end_time = start_time + service_duration
 
     token_data = {
         "token_number": token_number,
@@ -93,24 +129,35 @@ def user_submit():
         "phone": phone,
         "address": address,
         "date": date_str,
+        "slot_time": time_str,                             # "HH:MM"
+        "start_time": slot_start_dt.strftime("%H:%M"),     # for display
+        "end_time": slot_end_dt.strftime("%H:%M"),         # for display
         "status": "Active",
         "created_at": now,
-        "end_time": end_time.strftime("%H:%M:%S"),
+        "booking_datetime": slot_start_dt,
+        "expiry_datetime": slot_end_dt,
         "actual_service_time": None
     }
 
     tokens_collection.insert_one(token_data)
 
-    return render_template('token.html',
-                           token=token_number,
-                           date=date_str,
-                           time=now.strftime("%H:%M:%S"),
-                           end_time=end_time.strftime("%H:%M:%S"))
+    # These names MUST match token.html placeholders
+    return render_template(
+        'token.html',
+        token=token_number,
+        date=date_str,
+        booking_time=time_str,
+        start_time=slot_start_dt.strftime("%H:%M"),
+        end_time=slot_end_dt.strftime("%H:%M")
+    )
+
 
 # --- Staff Dashboard ---
 @app.route('/staff')
 @login_required
 def staff_dashboard():
+    expire_old_tokens()  # update statuses based on expiry time
+
     today = datetime.now().strftime("%Y-%m-%d")
     tokens = list(tokens_collection.find({"date": today}).sort("token_number", 1))
 
@@ -136,6 +183,7 @@ def staff_dashboard():
 
     return render_template('staff.html', tokens=tokens, stats=stats, user=current_user.username)
 
+
 # --- Mark Done ---
 @app.route('/done/<int:token_number>', methods=['POST'])
 @login_required
@@ -143,25 +191,18 @@ def mark_done(token_number):
     today = datetime.now().strftime("%Y-%m-%d")
     token = tokens_collection.find_one({"token_number": token_number, "date": today})
     if token and token['status'] == "Active":
-        token_datetime = token['created_at']
+        # measure service time from booking slot start (fallback to created_at if missing)
+        start_dt = token.get('booking_datetime', token['created_at'])
         now = datetime.now()
-        actual_service_time = round((now - token_datetime).total_seconds() / 60, 1)
+        actual_service_time = round((now - start_dt).total_seconds() / 60, 1)
 
-        tokens_collection.update_one({"token_number": token_number, "date": today},
-                                     {"$set": {"status": "Done", "actual_service_time": actual_service_time}})
-
-        remaining_tokens = list(tokens_collection.find(
-            {"status": "Active", "token_number": {"$gt": token_number}, "date": today}
-        ).sort("token_number", 1))
-
-        prev_end_time = now
-        for t in remaining_tokens:
-            new_end = prev_end_time + timedelta(minutes=5)
-            tokens_collection.update_one({"token_number": t["token_number"], "date": today},
-                                         {"$set": {"end_time": new_end.strftime("%H:%M:%S")}})
-            prev_end_time = new_end
+        tokens_collection.update_one(
+            {"token_number": token_number, "date": today},
+            {"$set": {"status": "Done", "actual_service_time": actual_service_time}}
+        )
 
     return redirect(url_for('staff_dashboard'))
+
 
 # --- Cancel Token ---
 @app.route('/cancel/<int:token_number>', methods=['POST'])
@@ -170,25 +211,19 @@ def cancel_token(token_number):
     today = datetime.now().strftime("%Y-%m-%d")
     token = tokens_collection.find_one({"token_number": token_number, "date": today})
     if token and token['status'] == "Active":
-        tokens_collection.update_one({"token_number": token_number, "date": today},
-                                     {"$set": {"status": "Cancelled"}})
-
-        remaining_tokens = list(tokens_collection.find(
-            {"status": "Active", "token_number": {"$gt": token_number}, "date": today}
-        ).sort("token_number", 1))
-
-        prev_end_time = datetime.now()
-        for t in remaining_tokens:
-            new_end = prev_end_time + timedelta(minutes=5)
-            tokens_collection.update_one({"token_number": t["token_number"], "date": today},
-                                         {"$set": {"end_time": new_end.strftime("%H:%M:%S")}})
-            prev_end_time = new_end
+        tokens_collection.update_one(
+            {"token_number": token_number, "date": today},
+            {"$set": {"status": "Cancelled"}}
+        )
 
     return redirect(url_for('staff_dashboard'))
+
 
 # --- API Token Status ---
 @app.route('/api/token_status/<int:token_number>')
 def token_status(token_number):
+    expire_old_tokens()  # make sure expired tokens are updated
+
     today = datetime.now().strftime("%Y-%m-%d")
     token = tokens_collection.find_one({"token_number": token_number, "date": today})
     if token:
@@ -196,12 +231,19 @@ def token_status(token_number):
             "token_number": token["token_number"],
             "status": token["status"]
         }
+
         if token["status"] == "Active":
-            response["end_datetime"] = f"{token['date']} {token['end_time']}"
-            response["end_time"] = token['end_time']
+            # We'll count down to the start of the slot
+            response["date"] = token["date"]
+            response["slot_time"] = token.get("slot_time")
+            response["start_time"] = token.get("start_time")
+            response["end_time"] = token.get("end_time")
+            response["end_datetime"] = token["booking_datetime"].strftime("%Y-%m-%d %H:%M:%S")
+
         return jsonify(response)
     else:
         return jsonify({"error": "Token not found"}), 404
+
 
 if __name__ == '__main__':
     app.run(debug=True)
