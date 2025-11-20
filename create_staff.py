@@ -1,19 +1,19 @@
 from pymongo import MongoClient
 
-# same URI and DB name as in app.py
+# Connect to MongoDB
 client = MongoClient("mongodb://localhost:27017/")
 db = client["smartqueue"]
 staff_collection = db["staff"]
 
-# change these to whatever you want
-username = "admin"
-password = "1234"   # plain text, because app.py checks plain text
+while True:
+    print("\n➕ Add New Staff User")
+    username = input("Enter username: ")
+    password = input("Enter password: ")
 
-staff_collection.insert_one({
-    "username": username,
-    "password": password
-})
+    staff_collection.insert_one({"username": username, "password": password})
+    print("✔ Staff user added:", username)
 
-print("Staff user created:")
-print("username:", username)
-print("password:", password)
+    another = input("Add another staff? (yes/no): ").lower()
+    if another not in ["yes", "y"]:
+        print("\n👌 Exiting staff creator script.")
+        break

@@ -85,13 +85,21 @@ def user_submit():
     name = request.form.get('name')
     phone = request.form.get('phone')
     address = request.form.get('address')
-    date_str = request.form.get('date')          # YYYY-MM-DD from <input type="date">
-    time_str = request.form.get('time_slot')     # HH:MM from <input type="time">
+    date_str = request.form.get('date')          # YYYY-MM-DD
+    time_str = request.form.get('time_slot')     # HH:MM
 
     if not (name and phone and address and date_str and time_str):
         return "All fields required!", 400
 
-    # Combine date + time into one datetime (start of the slot)
+    # 🚫 1. Block booking if phone already has an active token (any date)
+    existing_user = tokens_collection.find_one({
+        "phone": phone,
+        "status": "Active"
+    })
+    if existing_user:
+        return "This phone number already has an active token. Please complete or cancel it before booking another.", 400
+
+    # 2. Combine date + time into one datetime (start of the slot)
     try:
         slot_start_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
     except ValueError:
@@ -99,40 +107,51 @@ def user_submit():
 
     now = datetime.now()
 
-    # Do not allow booking in the past
+    # Prevent booking past slot time
     if slot_start_dt < now:
         return "You cannot book a past time slot.", 400
 
-    # Each token is valid for 15 minutes from slot_start_dt
+    # 3. Each token valid for 15 minutes
     token_life = timedelta(minutes=15)
     slot_end_dt = slot_start_dt + token_life
 
-    # Prevent double booking of the exact same date + time slot (only one active token per slot)
-    existing = tokens_collection.find_one({
-        "date": date_str,
-        "slot_time": time_str,
-        "status": {"$in": ["Active"]}
-    })
-    if existing:
-        return "This time slot is already booked. Please choose another.", 400
+    # 🟡 4. Find staff with least active tokens (load balancing)
+    staffs = list(staff_collection.find())
+    if not staffs:
+        return "No staff available. Please contact admin.", 500
 
-    # Generate token number for that date
+    staff_load = {}
+    for s in staffs:
+        username = s["username"]
+        count = tokens_collection.count_documents({
+            "status": "Active",
+            "assigned_staff": username
+        })
+        staff_load[username] = count
+
+    # choose staff with minimum active tokens
+    assigned_staff = min(staff_load, key=staff_load.get)
+    print("Assigned staff:", assigned_staff)
+
+    # 5. Generate token number for that date
     last_token = tokens_collection.find_one(
         {"date": date_str},
         sort=[("token_number", -1)]
     )
     token_number = 1 if not last_token else last_token["token_number"] + 1
 
+    # 6. Save token with assigned_staff
     token_data = {
         "token_number": token_number,
         "name": name,
         "phone": phone,
         "address": address,
         "date": date_str,
-        "slot_time": time_str,                             # "HH:MM"
-        "start_time": slot_start_dt.strftime("%H:%M"),     # for display
-        "end_time": slot_end_dt.strftime("%H:%M"),         # for display
+        "slot_time": time_str,
+        "start_time": slot_start_dt.strftime("%H:%M"),
+        "end_time": slot_end_dt.strftime("%H:%M"),
         "status": "Active",
+        "assigned_staff": assigned_staff,        # ✅ important
         "created_at": now,
         "booking_datetime": slot_start_dt,
         "expiry_datetime": slot_end_dt,
@@ -141,7 +160,6 @@ def user_submit():
 
     tokens_collection.insert_one(token_data)
 
-    # These names MUST match token.html placeholders
     return render_template(
         'token.html',
         token=token_number,
@@ -152,6 +170,8 @@ def user_submit():
     )
 
 
+
+
 # --- Staff Dashboard ---
 @app.route('/staff')
 @login_required
@@ -159,12 +179,30 @@ def staff_dashboard():
     expire_old_tokens()  # update statuses based on expiry time
 
     today = datetime.now().strftime("%Y-%m-%d")
-    tokens = list(tokens_collection.find({"date": today}).sort("token_number", 1))
 
-    active_tokens = tokens_collection.count_documents({"status": "Active", "date": today})
-    completed_tokens = tokens_collection.count_documents({"status": "Done", "date": today})
+    # 🔹 Only show tokens assigned to the logged-in staff
+    tokens = list(tokens_collection.find({
+        "date": today,
+        "assigned_staff": current_user.username
+    }).sort("token_number", 1))
 
-    completed = list(tokens_collection.find({"status": "Done", "date": today}))
+    # Stats per staff (not global)
+    active_tokens = tokens_collection.count_documents({
+        "status": "Active",
+        "date": today,
+        "assigned_staff": current_user.username
+    })
+    completed_tokens = tokens_collection.count_documents({
+        "status": "Done",
+        "date": today,
+        "assigned_staff": current_user.username
+    })
+
+    completed = list(tokens_collection.find({
+        "status": "Done",
+        "date": today,
+        "assigned_staff": current_user.username
+    }))
     completed_times = [t['actual_service_time'] for t in completed if t.get('actual_service_time') is not None]
 
     if completed_times:
@@ -182,6 +220,7 @@ def staff_dashboard():
     }
 
     return render_template('staff.html', tokens=tokens, stats=stats, user=current_user.username)
+
 
 
 # --- Mark Done ---
