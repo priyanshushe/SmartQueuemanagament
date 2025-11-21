@@ -1,3 +1,5 @@
+from openai import OpenAI
+from predict_slot import predict_best_slot
 from flask import Flask, render_template, request, redirect, url_for, jsonify
 from flask_login import LoginManager, UserMixin, login_user, logout_user, login_required, current_user
 from datetime import datetime, timedelta
@@ -7,19 +9,19 @@ from bson.objectid import ObjectId
 app = Flask(__name__)
 app.secret_key = "supersecretkey"
 
-# --- MongoDB Setup ---
-client = MongoClient("mongodb://localhost:27017/")
-db = client["smartqueue"]
+# ----------------- MongoDB Setup -----------------
+mongo_client = MongoClient("mongodb://localhost:27017/")
+db = mongo_client["smartqueue"]
 tokens_collection = db["tokens"]
 staff_collection = db["staff"]
 
-# --- Flask-Login Setup ---
+# ----------------- Flask-Login Setup -----------------
 login_manager = LoginManager()
 login_manager.login_view = "home"
 login_manager.init_app(app)
 
 
-# --- Staff User Class ---
+# ----------------- Staff User Class -----------------
 class Staff(UserMixin):
     def __init__(self, id_, username):
         self.id = id_      # must be string
@@ -34,7 +36,7 @@ def load_user(user_id):
     return None
 
 
-# --------- Helper: auto-expire old tokens ---------
+# ----------------- Helper: auto-expire old tokens -----------------
 def expire_old_tokens():
     """Set status='Expired' for tokens whose 15-minute slot is over."""
     now = datetime.now()
@@ -47,7 +49,7 @@ def expire_old_tokens():
     )
 
 
-# --- Home Page ---
+# ----------------- Home Page -----------------
 @app.route('/')
 def home():
     today = datetime.now().strftime("%Y-%m-%d")
@@ -55,15 +57,14 @@ def home():
     return render_template('index.html', today=today, login_error=login_error)
 
 
-# --- Staff Login ---
+# ----------------- Staff Login -----------------
 @app.route('/staff_login', methods=['POST'])
 def staff_login():
     username = request.form.get("username")
     password = request.form.get("password")
 
     staff = staff_collection.find_one({"username": username})
-    # NOTE: plain-text password check (same as your original)
-    if staff and staff["password"] == password:
+    if staff and staff["password"] == password:  # plain-text check (same as your original)
         user_obj = Staff(str(staff["_id"]), staff["username"])
         login_user(user_obj)
         return redirect(url_for("staff_dashboard"))
@@ -71,7 +72,7 @@ def staff_login():
         return redirect(url_for("home") + "?login_error=1")
 
 
-# --- Staff Logout ---
+# ----------------- Staff Logout -----------------
 @app.route('/staff_logout')
 @login_required
 def staff_logout():
@@ -79,7 +80,7 @@ def staff_logout():
     return redirect(url_for("home"))
 
 
-# --- User Submit (booking with date + time slot) ---
+# ----------------- User Submit (booking with date + time slot) -----------------
 @app.route('/user', methods=['POST'])
 def user_submit():
     name = request.form.get('name')
@@ -91,7 +92,7 @@ def user_submit():
     if not (name and phone and issue and date_str and time_str):
         return "All fields required!", 400
 
-    # 🚫 1. Block booking if phone already has an active token (any date)
+    # 1. Block booking if phone already has an active token (any date)
     existing_user = tokens_collection.find_one({
         "phone": phone,
         "status": "Active"
@@ -115,7 +116,7 @@ def user_submit():
     token_life = timedelta(minutes=15)
     slot_end_dt = slot_start_dt + token_life
 
-    # 🟡 4. Find staff with least active tokens (load balancing)
+    # 4. Find staff with least active tokens (load balancing)
     staffs = list(staff_collection.find())
     if not staffs:
         return "No staff available. Please contact admin.", 500
@@ -129,7 +130,6 @@ def user_submit():
         })
         staff_load[username] = count
 
-    # choose staff with minimum active tokens
     assigned_staff = min(staff_load, key=staff_load.get)
     print("Assigned staff:", assigned_staff)
 
@@ -151,7 +151,7 @@ def user_submit():
         "start_time": slot_start_dt.strftime("%H:%M"),
         "end_time": slot_end_dt.strftime("%H:%M"),
         "status": "Active",
-        "assigned_staff": assigned_staff,        # ✅ important
+        "assigned_staff": assigned_staff,
         "created_at": now,
         "booking_datetime": slot_start_dt,
         "expiry_datetime": slot_end_dt,
@@ -170,23 +170,19 @@ def user_submit():
     )
 
 
-
-
-# --- Staff Dashboard ---
+# ----------------- Staff Dashboard -----------------
 @app.route('/staff')
 @login_required
 def staff_dashboard():
-    expire_old_tokens()  # update statuses based on expiry time
+    expire_old_tokens()
 
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # 🔹 Only show tokens assigned to the logged-in staff
     tokens = list(tokens_collection.find({
         "date": today,
         "assigned_staff": current_user.username
     }).sort("token_number", 1))
 
-    # Stats per staff (not global)
     active_tokens = tokens_collection.count_documents({
         "status": "Active",
         "date": today,
@@ -222,15 +218,13 @@ def staff_dashboard():
     return render_template('staff.html', tokens=tokens, stats=stats, user=current_user.username)
 
 
-
-# --- Mark Done ---
+# ----------------- Mark Done -----------------
 @app.route('/done/<int:token_number>', methods=['POST'])
 @login_required
 def mark_done(token_number):
     today = datetime.now().strftime("%Y-%m-%d")
     token = tokens_collection.find_one({"token_number": token_number, "date": today})
     if token and token['status'] == "Active":
-        # measure service time from booking slot start (fallback to created_at if missing)
         start_dt = token.get('booking_datetime', token['created_at'])
         now = datetime.now()
         actual_service_time = round((now - start_dt).total_seconds() / 60, 1)
@@ -243,7 +237,7 @@ def mark_done(token_number):
     return redirect(url_for('staff_dashboard'))
 
 
-# --- Cancel Token ---
+# ----------------- Cancel Token -----------------
 @app.route('/cancel/<int:token_number>', methods=['POST'])
 @login_required
 def cancel_token(token_number):
@@ -258,10 +252,10 @@ def cancel_token(token_number):
     return redirect(url_for('staff_dashboard'))
 
 
-# --- API Token Status ---
+# ----------------- API Token Status -----------------
 @app.route('/api/token_status/<int:token_number>')
 def token_status(token_number):
-    expire_old_tokens()  # make sure expired tokens are updated
+    expire_old_tokens()
 
     today = datetime.now().strftime("%Y-%m-%d")
     token = tokens_collection.find_one({"token_number": token_number, "date": today})
@@ -272,7 +266,6 @@ def token_status(token_number):
         }
 
         if token["status"] == "Active":
-            # We'll count down to the start of the slot
             response["date"] = token["date"]
             response["slot_time"] = token.get("slot_time")
             response["start_time"] = token.get("start_time")
@@ -284,5 +277,84 @@ def token_status(token_number):
         return jsonify({"error": "Token not found"}), 404
 
 
+# ----------------- Smart Slot Suggestion (Rule-based) -----------------
+@app.route('/api/suggest_slot')
+def suggest_slot():
+    date_str = request.args.get('date')
+    if not date_str:
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+    start_hour = 9
+    end_hour = 17
+    slot_minutes = 15
+
+    slots = {}
+    for h in range(start_hour, end_hour):
+        for m in range(0, 60, slot_minutes):
+            slot = f"{h:02d}:{m:02d}"
+            slots[slot] = 0
+
+    tokens = tokens_collection.find({"date": date_str})
+    for t in tokens:
+        slot = t.get("slot_time")
+        if slot in slots and t.get("status") in ["Active", "Done", "Cancelled", "Expired"]:
+            slots[slot] += 1
+
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+
+    def is_future_slot(slot_time_str):
+        if date_str != today_str:
+            return True
+        h, m = map(int, slot_time_str.split(":"))
+        slot_dt = now.replace(hour=h, minute=m, second=0, microsecond=0)
+        return slot_dt >= now + timedelta(minutes=15)
+
+    candidates = [(slot, count) for slot, count in slots.items() if is_future_slot(slot)]
+
+    if not candidates:
+        return jsonify({"error": "No available slots."}), 404
+
+    min_count = min(c[1] for c in candidates)
+    best_slot = sorted([slot for slot, count in candidates if count == min_count])[0]
+
+    return jsonify({
+        "date": date_str,
+        "suggested_slot": best_slot,
+        "bookings_in_slot": slots[best_slot]
+    })
+
+# --- "AI" Chatbot (rule-based, no external API) ---
+@app.route('/chatbot', methods=['POST'])
+def chatbot():
+    user_query = request.form.get("message", "").lower().strip()
+    best_slot = predict_best_slot()  # still uses your ML logic
+
+    # Start building a response
+    parts = []
+
+    # 1) Questions about best time / slot
+    if "when" in user_query or "time" in user_query or "slot" in user_query or "come" in user_query:
+        parts.append(f"Based on current and past bookings, a good time to visit is around {best_slot}.")
+
+    # 2) Questions about waiting
+    if "wait" in user_query or "waiting" in user_query or "queue" in user_query:
+        parts.append("Earlier slots in the day and the suggested time generally have less waiting time.")
+
+    # 3) If asking about token or status
+    if "token" in user_query or "status" in user_query:
+        parts.append("You can check your token status using the 'Token Status' tab and entering your token number.")
+
+    # 4) Default fallback if we didn't match anything
+    if not parts:
+        parts.append(
+            "I can help with queue timing and booking questions. "
+            "Try asking something like 'When should I come to avoid waiting?'"
+        )
+
+    reply_text = " ".join(parts)
+    return jsonify({"reply": reply_text})
+
+# ----------------- Run App -----------------
 if __name__ == '__main__':
     app.run(debug=True)
