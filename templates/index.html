@@ -165,6 +165,51 @@ h1 {
             </div>
         </div>
     </div>
+        <!-- ============================= -->
+    <!-- FEEDBACK SECTION -->
+    <!-- ============================= -->
+    <div class="row g-3 mt-2">
+        <div class="col-12">
+            <div class="section-card" id="feedback-section">
+                <h4>📝 Give Feedback</h4>
+                <p class="panel-subtitle">
+                    Help us improve our service. Choose a department and share your feedback.
+                </p>
+
+                {% if feedback_success %}
+                    <div class="alert alert-success py-2">
+                        Thank you for your feedback!
+                    </div>
+                {% endif %}
+
+                <form action="/feedback" method="POST">
+                    <div class="row g-2">
+                        <div class="col-md-4">
+                            <label class="form-label">Your Name (optional)</label>
+                            <input type="text" name="name" class="form-control" placeholder="Name">
+                        </div>
+                        <div class="col-md-4">
+                            <label class="form-label">Department</label>
+                            <select name="department" class="form-control" required>
+                                <option value="" disabled selected>Select department</option>
+                                <option value="Deposit & Withdrawal">Deposit & Withdrawal</option>
+                                <option value="Loans">Loans</option>
+                                <option value="KYC & Account Creation">KYC & Account Creation</option>
+                                <option value="General">General</option>
+                            </select>
+                        </div>
+                        <div class="col-md-12 mt-2">
+                            <label class="form-label">Feedback</label>
+                            <textarea name="message" class="form-control" rows="3"
+                                      placeholder="Write your feedback here..." required></textarea>
+                        </div>
+                    </div>
+                    <button type="submit" class="btn btn-primary w-100 mt-3">Submit Feedback</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
 </div>
 
 <script>

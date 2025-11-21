@@ -8,12 +8,52 @@ from bson.objectid import ObjectId
 
 app = Flask(__name__)
 app.secret_key = "supersecretkey"
+def get_department_from_issue(issue_text: str) -> str:
+    """
+    Very simple keyword-based classifier.
+    Looks at the issue text and returns one of:
+    'Deposit & Withdrawal', 'Loans', 'KYC & Account Creation', 'General'
+    """
+    if not issue_text:
+        return "General"
+
+    text = issue_text.lower()
+
+    # Deposit & Withdrawal
+    deposit_keywords = [
+        "deposit", "withdraw", "withdrawal", "cash", "saving", "savings",
+        "fd", "fixed deposit", "rd", "recurring deposit", "balance", "passbook", "atm"
+    ]
+    if any(word in text for word in deposit_keywords):
+        return "Deposit & Withdrawal"
+
+    # Loans
+    loan_keywords = [
+        "loan", "home loan", "car loan", "personal loan", "education loan",
+        "emi", "interest rate", "repayment", "mortgage"
+    ]
+    if any(word in text for word in loan_keywords):
+        return "Loans"
+
+    # KYC & Account Creation
+    kyc_keywords = [
+        "kyc", "account opening", "open account", "new account",
+        "current account", "savings account opening",
+        "aadhaar", "aadhar", "pan", "id proof", "update kyc"
+    ]
+    if any(word in text for word in kyc_keywords):
+        return "KYC & Account Creation"
+
+    # Fallback
+    return "General"
+
 
 # ----------------- MongoDB Setup -----------------
 mongo_client = MongoClient("mongodb://localhost:27017/")
 db = mongo_client["smartqueue"]
 tokens_collection = db["tokens"]
 staff_collection = db["staff"]
+feedback_collection = db["feedback"]   # NEW
 
 # ----------------- Flask-Login Setup -----------------
 login_manager = LoginManager()
@@ -54,8 +94,14 @@ def expire_old_tokens():
 def home():
     today = datetime.now().strftime("%Y-%m-%d")
     login_error = request.args.get('login_error')
-    return render_template('index.html', today=today, login_error=login_error)
+    feedback_success = request.args.get('feedback')  # "1" after feedback submitted
 
+    return render_template(
+        'index.html',
+        today=today,
+        login_error=login_error,
+        feedback_success=feedback_success
+    )
 
 # ----------------- Staff Login -----------------
 @app.route('/staff_login', methods=['POST'])
@@ -89,10 +135,11 @@ def user_submit():
     date_str = request.form.get('date')          # YYYY-MM-DD
     time_str = request.form.get('time_slot')     # HH:MM
 
+    # ✅ Only check real form fields (no department here)
     if not (name and phone and issue and date_str and time_str):
         return "All fields required!", 400
 
-    # 1. Block booking if phone already has an active token (any date)
+    # 🚫 1. Block booking if phone already has an active token (any date)
     existing_user = tokens_collection.find_one({
         "phone": phone,
         "status": "Active"
@@ -112,26 +159,31 @@ def user_submit():
     if slot_start_dt < now:
         return "You cannot book a past time slot.", 400
 
+    # 🔍 Automatically decide department based on issue text
+    department = get_department_from_issue(issue)
+    print("Inferred department:", department)
+
     # 3. Each token valid for 15 minutes
     token_life = timedelta(minutes=15)
     slot_end_dt = slot_start_dt + token_life
 
-    # 4. Find staff with least active tokens (load balancing)
-    staffs = list(staff_collection.find())
+    # 🟡 4. Find staff in this department with least active tokens
+    staffs = list(staff_collection.find({"department": department}))
     if not staffs:
-        return "No staff available. Please contact admin.", 500
+        return f"No staff available for department: {department}. Please contact admin.", 500
 
     staff_load = {}
     for s in staffs:
         username = s["username"]
         count = tokens_collection.count_documents({
             "status": "Active",
-            "assigned_staff": username
+            "assigned_staff": username,
+            "department": department
         })
         staff_load[username] = count
 
     assigned_staff = min(staff_load, key=staff_load.get)
-    print("Assigned staff:", assigned_staff)
+    print("Assigned staff:", assigned_staff, "for department:", department)
 
     # 5. Generate token number for that date
     last_token = tokens_collection.find_one(
@@ -140,12 +192,13 @@ def user_submit():
     )
     token_number = 1 if not last_token else last_token["token_number"] + 1
 
-    # 6. Save token with assigned_staff
+    # 6. Save token with assigned_staff + department
     token_data = {
         "token_number": token_number,
         "name": name,
         "phone": phone,
         "issue": issue,
+        "department": department,
         "date": date_str,
         "slot_time": time_str,
         "start_time": slot_start_dt.strftime("%H:%M"),
@@ -166,23 +219,51 @@ def user_submit():
         date=date_str,
         booking_time=time_str,
         start_time=slot_start_dt.strftime("%H:%M"),
-        end_time=slot_end_dt.strftime("%H:%M")
+        end_time=slot_end_dt.strftime("%H:%M"),
+        department=department,   # optional if you show it on token page
     )
+from datetime import datetime  # you already have this at top
 
+@app.route('/feedback', methods=['POST'])
+def submit_feedback():
+    name = request.form.get("name")              # optional
+    department = request.form.get("department")  # required
+    message = request.form.get("message")        # required
+
+    if not (department and message):
+        return "Department and feedback message are required.", 400
+
+    feedback_doc = {
+        "name": name,
+        "department": department,
+        "message": message,
+        "created_at": datetime.now()
+    }
+
+    feedback_collection.insert_one(feedback_doc)
+
+    # redirect back to home with a "feedback=1" flag
+    return redirect(url_for("home") + "?feedback=1")
 
 # ----------------- Staff Dashboard -----------------
 @app.route('/staff')
 @login_required
 def staff_dashboard():
-    expire_old_tokens()
+    expire_old_tokens()  # update statuses based on expiry time
 
     today = datetime.now().strftime("%Y-%m-%d")
 
+    # 1) Get this staff member's document (to know department)
+    staff_doc = staff_collection.find_one({"username": current_user.username})
+    staff_department = staff_doc.get("department", "Not assigned") if staff_doc else "Not assigned"
+
+    # 2) Get today's tokens assigned to this staff
     tokens = list(tokens_collection.find({
         "date": today,
         "assigned_staff": current_user.username
     }).sort("token_number", 1))
 
+    # Stats per staff
     active_tokens = tokens_collection.count_documents({
         "status": "Active",
         "date": today,
@@ -215,7 +296,13 @@ def staff_dashboard():
         "fastest": fastest
     }
 
-    return render_template('staff.html', tokens=tokens, stats=stats, user=current_user.username)
+    return render_template(
+        'staff.html',
+        tokens=tokens,
+        stats=stats,
+        user=current_user.username,
+        department=staff_department  # 👈 pass department
+    )
 
 
 # ----------------- Mark Done -----------------

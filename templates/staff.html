@@ -57,9 +57,17 @@ h2 {
 
 <div class="container">
     <div class="glass-box">
-        <h2>Welcome, {{ user }}</h2>
-        <p class="text-light">📅 Date: <strong>{{ tokens[0].date if tokens else "No bookings yet" }}</strong></p>
-    </div>
+    <h2>Welcome, {{ user }}</h2>
+    <p class="text-light">
+        📅 Date: <strong>{{ tokens[0].date if tokens else "No bookings yet" }}</strong>
+    </p>
+    <p class="text-light">
+    🏢 Department:
+    <strong>{{ department }}</strong>
+    </p>
+
+</div>
+
 
     <div class="glass-box mt-3">
         <h4>📊 Today's Stats</h4>
@@ -77,6 +85,7 @@ h2 {
                     <th>Name</th>
                     <th>Contact</th>
                     <th>Issue</th>
+                    <th>Department</th>
                     <th>Time Slot</th>
                     <th>Valid (15 min)</th>
                     <th>Status</th>
@@ -90,6 +99,7 @@ h2 {
                     <td>{{ token.name }}</td>
                     <td>{{ token.phone }}</td>
                     <td>{{ token.issue }}</td>
+                    <td>{{ token.department }}</td>
                     <td>{{ token.slot_time }}</td>
                     <td>{{ token.start_time }} - {{ token.end_time }}</td>
 
